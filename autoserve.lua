@@ -2,6 +2,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local CoreGui = game:GetService("CoreGui")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -11,7 +12,12 @@ local playerGui = player:WaitForChild("PlayerGui")
 -- ==========================================
 local TARGET_MIN = 0.75 -- Start of the rainbow/purple zone (0.0 to 1.0)
 local TARGET_MAX = 0.95 -- End of the rainbow/purple zone
-local DELAY_SECONDS = 3.0 -- Seconds to hold W before looking for rainbow
+local DELAY_SECONDS = 3.0 -- Seconds to hold movement before looking for rainbow
+
+-- Screen coordinates for your Toss button (percentages of your screen size)
+-- Default is set to the bottom-right area (85% across, 80% down)
+local TOSS_SCREEN_X = 0.85 
+local TOSS_SCREEN_Y = 0.80 
 
 -- Create UI Toggle Button
 local screenGui = Instance.new("ScreenGui")
@@ -56,7 +62,7 @@ button.InputBegan:Connect(function(input)
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-	if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+	if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.MouseMovement) then
 		local delta = input.Position - dragStart
 		if delta.Magnitude > 8 then
 			moved = true
@@ -74,7 +80,6 @@ UserInputService.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
 		if dragging then
 			dragging = false
-			-- Only toggle if it was a tap, not a drag
 			if not moved then
 				enabled = not enabled
 				if enabled then
@@ -84,7 +89,6 @@ UserInputService.InputEnded:Connect(function(input)
 				else
 					button.Text = "Auto-Toss: OFF"
 					button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-					-- Stop moving immediately if turned off manually
 					pcall(function()
 						local char = player.Character
 						local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -97,7 +101,7 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 -- ==========================================
--- INDICATOR & TOSS LOGIC
+-- INDICATOR & DIRECT SCREEN-TAP LOGIC
 -- ==========================================
 local function getActiveIndicator()
 	for _, desc in ipairs(playerGui:GetDescendants()) do
@@ -111,46 +115,29 @@ local function getActiveIndicator()
 end
 
 local function triggerTossButton()
-	local tossed = false
-
-	for _, desc in ipairs(playerGui:GetDescendants()) do
-		if desc:IsA("TextButton") or desc:IsA("ImageButton") then
-			local nameLower = desc.Name:lower()
-			if nameLower:find("toss") or nameLower:find("hit") or nameLower:find("action") then
-				pcall(function()
-					for _, conn in pairs(getconnections(desc.MouseButton1Click)) do conn:Fire() end
-					for _, conn in pairs(getconnections(desc.Activated)) do conn:Fire() end
-					for _, conn in pairs(getconnections(desc.MouseButton1Down)) do conn:Fire() end
-					for _, conn in pairs(getconnections(desc.MouseButton1Up)) do conn:Fire() end
-				end)
-				tossed = true
-			end
-		end
-	end
-
-	if not tossed then
-		local vim = game:GetService("VirtualInputManager")
-		local cam = workspace.CurrentCamera
-		if vim and cam then
-			local screenX, screenY = cam.ViewportSize.X * 0.85, cam.ViewportSize.Y * 0.80
-			vim:SendTouchEvent(1, 0, screenX, screenY)
-			task.wait(0.02)
-			vim:SendTouchEvent(1, 2, screenX, screenY)
-		end
+	local cam = workspace.CurrentCamera
+	if VirtualInputManager and cam then
+		local screenX = cam.ViewportSize.X * TOSS_SCREEN_X
+		local screenY = cam.ViewportSize.Y * TOSS_SCREEN_Y
+		
+		-- Simulate touch down (State 0) then touch up (State 2) at the exact coordinates
+		VirtualInputManager:SendTouchEvent(1, 0, screenX, screenY)
+		task.wait(0.03)
+		VirtualInputManager:SendTouchEvent(1, 2, screenX, screenY)
 	end
 end
 
 RunService.RenderStepped:Connect(function()
 	if not enabled then return end
 
-	-- 1. Hold W (move forward) while waiting and up until toss
+	-- 1. Walk straight forward relative to the character's facing direction
 	pcall(function()
 		local char = player.Character
 		local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-		if humanoid then
-			local camLook = workspace.CurrentCamera.CFrame.LookVector
-			local moveDir = Vector3.new(camLook.X, 0, camLook.Z).Unit
-			humanoid:Move(moveDir, true)
+		local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+		if humanoid and rootPart then
+			local forwardDir = rootPart.CFrame.LookVector
+			humanoid:Move(Vector3.new(forwardDir.X, 0, forwardDir.Z).Unit, false)
 		end
 	end)
 
@@ -159,7 +146,7 @@ RunService.RenderStepped:Connect(function()
 		return
 	end
 
-	-- 3. Check if indicator is in the rainbow zone, then toss & stop W
+	-- 3. Check if indicator is in the rainbow zone, then toss & stop
 	local indicator = getActiveIndicator()
 	if indicator and indicator.Visible then
 		local parent = indicator.Parent
@@ -167,19 +154,16 @@ RunService.RenderStepped:Connect(function()
 			local relativeX = (indicator.AbsolutePosition.X - parent.AbsolutePosition.X) / parent.AbsoluteSize.X
 
 			if relativeX >= TARGET_MIN and relativeX <= TARGET_MAX then
-				-- Turn off immediately so it only tosses once and lets go of W
 				enabled = false
 				button.Text = "Auto-Toss: OFF"
 				button.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 
-				-- Stop moving forward
 				pcall(function()
 					local char = player.Character
 					local hum = char and char:FindFirstChildOfClass("Humanoid")
 					if hum then hum:Move(Vector3.zero, true) end
 				end)
 
-				-- Fire the toss
 				triggerTossButton()
 			end
 		end
